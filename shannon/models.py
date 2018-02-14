@@ -5,6 +5,7 @@ import logging
 
 from boto.s3.connection import S3Connection
 from boto.s3.key import Key
+from boto.exception import S3ResponseError
 import urllib2
 
 from django.conf import settings
@@ -35,7 +36,7 @@ EXTENSIONS = {
     "TXT":['txt','md'],
     "VID":['avi', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'vob', 'wmv'],
     "AUD":['aac', 'aiff', 'm4a', 'mp3', 'wav', 'wma'],
-    "IMA":['gif', 'jpeg', 'jpg', 'png'],
+    "IMG":['gif', 'jpeg', 'jpg', 'png'],
     "MUL":[],
     "DAT":['csv','json'],
 }
@@ -90,17 +91,28 @@ DOCUMENT_EXTENSIONS = [
 ALL_EXTS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS + IMAGE_EXTENSIONS +\
     DOCUMENT_EXTENSIONS
 
+def get_unique_file_name(filename):
+    blocks = filename.split('.')
+    ext = blocks[-1]
+    filename = "%s.%s" % (uuid.uuid4(), ext)
+    return filename
+
 def get_file_path(instance, filename):
     blocks = filename.split('.')
     ext = blocks[-1]
     filename = "%s.%s" % (uuid.uuid4(), ext)
     instance.title = blocks[0]
-    return os.path.join('uploads/', filename)
+    return os.path.join('uploads/', get_unique_file_name(filename))
 
 def get_file_extension(filename, extension=None):
     #return string_in.__getslice__(string_in.__len__()-3, string_in.__len__()).lower()
     i = filename.rfind(".")
     return filename.__getslice__(i+1, filename.__len__()).lower()
+
+def get_file_name(filename, extension=None):
+    #return string_in.__getslice__(string_in.__len__()-3, string_in.__len__()).lower()
+    i = filename.rfind(".")
+    return filename.__getslice__(0, i).lower()
 
 def upload_to_s3(filename):
     conn = S3Connection(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY)
@@ -111,25 +123,48 @@ def upload_to_s3(filename):
     k.set_contents_from_filename(filename)
     return k
 
+def create_media_from_s3_key(s3_key):
+    m = Media()
+    m.set_internal_file_s3_key(s3_key)
+    m.assumed_extension = get_file_extension(s3_key)
+    m.medium = get_medium(m.assumed_extension)
+    #m.title = m.get_file_name()
+    return m
+
+def get_file_extension(string_in):
+    #return string_in.__getslice__(string_in.__len__()-3, string_in.__len__()).lower()
+    i = string_in.rfind(".")
+    return string_in.__getslice__(i+1, string_in.__len__()).lower()
+
+def get_medium(extension_in):
+    for medium in EXTENSIONS:
+        for extension in EXTENSIONS[medium]:
+            if extension == extension_in:
+                return medium
+
 
 class Media(models.Model):
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
     original_url = models.CharField(max_length=500, null=True, blank=True)
+    original_file_url = models.TextField(default='', null=True, blank=True)
+    internal_file_url = models.TextField(default='/', null=True, blank=True)
+    normalized_file_url = models.TextField(default='', null=True, blank=True)
+    original_thumbnail_file_url = models.TextField(default='', null=True, blank=True)
     original_file = models.FileField(upload_to=get_file_path, null=True, blank=True)
-    internal_file = models.FileField(upload_to='', null=True, blank=True)
+    internal_file = models.FileField(upload_to='/', null=True, blank=True)
     title = models.CharField(max_length=500, null=True, blank=True)
     assumed_extension = models.CharField(max_length=50, default="")
     medium = models.CharField(max_length=3, choices=MEDIUM_CHOICES, null=True, blank=True)
     status = models.CharField(max_length=1, choices=CONVERSION_STATUS, null=True, blank=True)
     blurb = models.TextField(default='', null=True, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
 
     def __str__(self):
-        if (self.original_url != "") and (self.original_url != None):
-            return self.original_url
+        if (self.title != "") and (self.title != None):
+            return self.title
         else:
-            return "whoops"
+            return "Couldn't Find Media Name"
 
     def get_status(self):
         return self.status
@@ -177,6 +212,31 @@ class Media(models.Model):
         for infile in glob.glob(temp_filename):
             file, ext = os.path.splitext(infile)
             im = Image.open(infile).convert("RGB")
+            im.save(file + ".jpg")
+
+        k = upload_to_s3(new_filename)
+        k.set_canned_acl('public-read')
+        self.set_internal_file_s3_key(k.name)
+        self.save()
+        os.remove(new_filename)
+
+    size = 256, 256
+    def refresh_original_image_as_thumbnail(self):
+        #download the file to local
+        hexy = uuid.uuid4()
+        temp_filename = str(hexy)+"."+self.assumed_extension
+        new_filename = str(hexy)+"."+"jpg"
+
+        temp_file = urllib2.urlopen(self.original_url)
+        data = temp_file.read()
+        with open(temp_filename, "wb") as code:
+            code.write(data)
+        #convert it to jpg
+        for infile in glob.glob(temp_filename):
+            file, ext = os.path.splitext(infile)
+            im = Image.open(infile).convert("RGB")
+
+            im.thumbnail(self.size, Image.ANTIALIAS)
             im.save(file + ".jpg")
 
         k = upload_to_s3(new_filename)
@@ -284,3 +344,41 @@ class Media(models.Model):
 @receiver(models.signals.pre_delete, sender=Media)
 def remove_file_from_s3(sender, instance, using, **kwargs):
     instance.internal_file.delete(save=False)
+
+def check_key_exists(key):
+    conn = S3Connection(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY)
+    bucket = conn.create_bucket(settings.AWS_STORAGE_BUCKET_NAME)
+    objs = list(bucket.objects.filter(Prefix=key))
+    if len(objs) > 0 and objs[0].key == key:
+        return True
+    else:
+        return False
+
+def delete_key(rel_path, bucket_name):
+    conn = S3Connection(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY)
+    bucket = conn.create_bucket(bucket_name)
+    for key in bucket.list(prefix=rel_path):
+        key.delete()
+
+def check_key_exists(rel_path, bucket_name):
+    conn = S3Connection(settings.AWS_ACCESS_KEY_ID, settings.AWS_SECRET_ACCESS_KEY)
+    bucket = conn.create_bucket(bucket_name)
+    exists = False
+    try:
+        # A hackish way of testing if the rel_path is a folder vs a file
+        is_dir = rel_path[-1] == '/'
+        if is_dir:
+            keyresult = bucket.get_all_keys(prefix=rel_path)
+            if len(keyresult) > 0:
+                exists = True
+            else:
+                exists = False
+        else:
+            key = Key(bucket, rel_path)
+            exists = key.exists()
+    except S3ResponseError:
+        log.exception("Trouble checking existence of S3 key '%s'", rel_path)
+        return False
+    if rel_path[0] == '/':
+        raise
+    return exists
