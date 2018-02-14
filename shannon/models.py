@@ -150,7 +150,7 @@ class Media(models.Model):
     normalized_file_url = models.TextField(default='', null=True, blank=True)
     original_thumbnail_file_url = models.TextField(default='', null=True, blank=True)
     original_file = models.FileField(upload_to=get_file_path, null=True, blank=True)
-    internal_file = models.FileField(upload_to='/', null=True, blank=True)
+    internal_file = models.FileField(upload_to='', null=True, blank=True)
     title = models.CharField(max_length=500, null=True, blank=True)
     assumed_extension = models.CharField(max_length=50, default="")
     medium = models.CharField(max_length=3, choices=MEDIUM_CHOICES, null=True, blank=True)
