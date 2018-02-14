@@ -160,6 +160,9 @@ class Media(models.Model):
     width = models.PositiveIntegerField(default=0)
     height = models.PositiveIntegerField(default=0)
 
+    class Meta:
+        abstract = True
+
     def __str__(self):
         if (self.title != "") and (self.title != None):
             return self.title
