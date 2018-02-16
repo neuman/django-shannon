@@ -388,7 +388,7 @@ def check_key_exists(rel_path, bucket_name):
 
 
 #detect media type at savetime
-from django.core.signals import post_save
+from django.db.models.signals import post_save
 
 @receiver(post_save, sender=Media)
 def media_post_save_handler(sender, **kwargs):
