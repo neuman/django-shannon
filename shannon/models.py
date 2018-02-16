@@ -385,3 +385,11 @@ def check_key_exists(rel_path, bucket_name):
     if rel_path[0] == '/':
         raise
     return exists
+
+
+#detect media type at savetime
+from django.core.signals import post_save
+
+@receiver(post_save, sender=Media)
+def media_post_save_handler(sender, **kwargs):
+    pass
